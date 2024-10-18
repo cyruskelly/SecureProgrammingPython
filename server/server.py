@@ -29,10 +29,15 @@ class Server:
                 print("Received message:", message)
                 data = json.loads(message)
                 if data["type"] == "signed_data":
-                    if data["data"]["type"] == "hello":
+                    # Decode the nested JSON string in the "data" field
+                    if data["data"] is dict:
+                        nested_data = json.loads(data["data"])
+                    else:
+                            nested_data = data["data"]
+                    if nested_data["type"] == "hello":
                         print("Received hello message from", websocket.remote_address)
-                        await self.server_hello(websocket, data)
-                    elif data["data"]["type"] == "chat":
+                        await self.server_hello(websocket, nested_data)
+                    elif nested_data["type"] == "chat":
                         print("Received chat message from", websocket.remote_address)
                         await self.server_chat(websocket, data)
                 else:
@@ -50,18 +55,20 @@ class Server:
         print("Sending hello message to", websocket.remote_address)
         hello_msg = {
             "type": "hello",
-            "public_key": data["data"]["public_key"]
+            "public_key": data["public_key"]
         }
-        await websocket.send(json.dumps(hello_msg))
+        # await websocket.send(json.dumps(hello_msg))
 
     async def server_chat(self, websocket, data):
-        if self.server_url + ":" + str(self.port) in data["data"]["destination_servers"]:
+
+        nested_data = json.loads(data["data"])
+        if self.server_url + ":" + str(self.port) in nested_data["destination_servers"]:
             print("Relaying message to all clients")
             for client in self.clients:
                 await client.send(json.dumps(data))
         
         other_servers = False
-        for server in data["data"]["destination_servers"]:
+        for server in nested_data["destination_servers"]:
             if server != self.server_url + ":" + str(self.port):
                 other_servers = True
                 break
