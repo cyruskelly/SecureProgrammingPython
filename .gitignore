@@ -3,3 +3,5 @@ client/data/counter.txt
 client/data/private_key.pem
 client/data/public_key.pem
 server/.env
+client/data/public_key.pub
+client/data/private_key.priv

@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 from Crypto.Cipher import AES
 
 class Client:
@@ -20,6 +21,8 @@ class Client:
                 self.private_key = serialization.load_pem_private_key(key_file.read(), password=None)
             with open("./data/public_key.pem", "rb") as key_file:
                 self.public_key = serialization.load_pem_public_key(key_file.read())
+            with open("./data/private_key.priv", "rb") as key_file:
+                self.priv = key_file.read()
             with open("./data/public_key.pub", "rb") as key_file:
                 self.pub = key_file.read()
         except FileNotFoundError:
@@ -36,11 +39,41 @@ class Client:
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             )
 
+            self.pub = ""
+
+            for line in pem_public_key.decode('utf-8').split("\n"):
+                if "BEGIN" in line:
+                    self.pub = self.pub + line + "\n"
+                elif "END" in line:
+                    self.pub = self.pub + "\n" + line
+                else:
+                    self.pub = self.pub + line
+
             with open("./data/public_key.pem", "wb") as key_file:
                 key_file.write(pem_public_key)
 
             with open("./data/public_key.pub", "w") as key_file:
-                key_file.write(pem_public_key.decode('utf-8'))
+                key_file.write(self.pub)
+
+            pem_priv_key = self.private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption()
+                ).decode('utf-8')
+            
+            self.priv = ""
+
+            for line in pem_priv_key.split("\n"):
+                if "BEGIN" in line:
+                    self.priv = self.priv + line + "\n"
+                elif "END" in line:
+                    self.priv = self.priv + "\n" + line
+                else:
+                    self.priv = self.priv + line
+
+
+            with open("./data/private_key.priv", "w") as key_file:
+                key_file.write(self.priv)
 
             self.public_key = self.private_key.public_key()
             self.pub = pem_public_key
@@ -125,7 +158,7 @@ class Client:
             "type": "signed_data",
             "data": data,
             "counter": 12345,
-            "signature": self.get_signature(json.dumps(data, separators=(',', ':')))
+            "signature": base64.b64encode(self.get_signature(json.dumps(data, separators=(',', ':')))).decode('utf-8')
         }
 
         await self.websocket.send(json.dumps(hello_msg))
@@ -139,7 +172,9 @@ class Client:
         await self.parse_signed_data(data)
     
     async def chat(self, user_rsas, servers, message):
+        aes = os.urandom(32)
         iv = os.urandom(16)
+        iv64 = base64.b64encode(iv).decode('utf-8')
     
         user_rsas_obj = []
     
@@ -148,31 +183,32 @@ class Client:
             user_rsas_obj.append(load_pem_public_key(user_rsa.encode('utf-8')))
     
         chat = {
-            "participants": user_rsas.insert(0, self.get_pub()),
+            "participants": [self.pub.decode('utf-8')] + user_rsas,
             "message": message
         }
-    
-        aes_encrypted_message = base64.b64encode(
-            self.get_public_key().encrypt(
-                json.dumps(chat).encode('utf-8'),
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None
-                )
-            )
-        ).decode('utf-8')
-    
+
+        chat = json.dumps(chat)
+
+        encryptor = Cipher(
+            algorithms.AES(aes),
+            modes.GCM(iv),
+            backend=default_backend()
+        ).encryptor()
+
+        cipher = encryptor.update(chat.encode('utf-8')) + encryptor.finalize()
+
+        aes_encrypted_message = base64.b64encode(cipher + encryptor.tag).decode('utf-8')
+        
         # symm_key is "<Base64 encoded (AES key encrypted with recipient's public RSA key)>",
         symm_keys = []
         for user_rsa in user_rsas_obj:
-            symm_key = user_rsa.encrypt(iv, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+            symm_key = user_rsa.encrypt(aes, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
             symm_keys.append(base64.b64encode(symm_key).decode('utf-8'))
     
         data = {
             "type": "chat",
             "destination_servers": servers,
-            "iv": base64.b64encode(iv).decode('utf-8'),
+            "iv": iv64,
             "symm_keys": symm_keys,
             "chat": aes_encrypted_message
         }
@@ -203,32 +239,39 @@ class Client:
 
         data = json_message["data"]
         iv = base64.b64decode(data["iv"])
-        symm_keys = data["symm_keys"]
-        aes_encrypted_message = base64.b64decode(data["chat"])
+        ciphertag = base64.b64decode(data["chat"])
+        symm_keys64 = data.get('symm_keys', [])
+        cipher = ciphertag[:-16]
+        tag = ciphertag[-16:]
 
-        for symm_key in symm_keys:
+        for symm_key in symm_keys64:
             try:
-                aes_key = self.private_key.decrypt(
-                    base64.b64decode(symm_key),
-                    padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+                symm_key = base64.b64decode(symm_key.encode('utf-8'))
+                decrypted_symm_key = self.private_key.decrypt(
+                    symm_key,
+                    padding.OAEP (
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
                 )
+                
+                decryption = Cipher(
+                    algorithms.AES(decrypted_symm_key),
+                    modes.GCM(iv, tag),
+                    backend=default_backend()
+                ).decryptor()
+                chat_message = decryption.update(cipher) + decryption.finalize()
+                chat = json.loads(chat_message.decode('utf-8'))
+                print("\nChat message from:", chat["participants"][0])
+                print("Message:\n", chat["message"])
+                print()
                 break
-            except ValueError:
+            except ConnectionAbortedError:
+                print("Could not decrypt message")
                 continue
-        else:
-            print("Could not decrypt message")
-            return
-        
-        cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv))
-        decryptor = cipher.decryptor()
-        decrypted_message = decryptor.update(aes_encrypted_message) + decryptor.finalize()
-        aes = AES.new(aes_key, AES.MODE_CBC, iv)
-        decrypted_message = aes.decrypt(aes_encrypted_message)
-        decrypted_message = decrypted_message[:-decrypted_message[-1]]
 
-        chat = json.loads(decrypted_message)
-        print("Chat message from", chat["participants"][0])
-        print(chat["message"])
+
 
 
 
@@ -245,10 +288,16 @@ class Client:
                 hashes.SHA256()
             )
         )
-        return signature.decode('utf-8')
+        return signature
+
+    def get_fingerprint(self):
+        return self.private_key.public_key().fingerprint(hashes.SHA256()).hex()
 
     def get_pub(self):
         return self.pub.decode('utf-8')
+    
+    def get_priv(self):
+        return self.priv.decode('utf-8')
     
     def get_public_key(self):
         return self.public_key
