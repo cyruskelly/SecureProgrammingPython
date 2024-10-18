@@ -19,7 +19,6 @@ pip install websockets python-dotenv cryptography pycryptodome
 ### Compilation Instructions
 The server.py must be compiled first before the client as the client will look to connect to a server right away. Compiling and running the client before the server will produce errors and the process will exit. 
 
-
  - Open two Terminals
 
 
