@@ -22,12 +22,12 @@ The server.py must be compiled first before the client as the client will look t
  - Open two Terminals
 
 
-  In one terminal compile and run server.py using
+ - In one terminal compile and run server.py using
 ```
   "python server.py"
 ```
 
- In another terminal compile and run client.py using
+- In another terminal compile and run client.py using
  ```
   "python client.py"
 ```
