@@ -25,12 +25,12 @@ The server.py must be compiled first before the client as the client will look t
 
   In one terminal compile and run server.py using
 ```
-  "python3 server.py"
+  "python server.py"
 ```
 
  In another terminal compile and run client.py using
  ```
-  "python3 client.py"
+  "python client.py"
 ```
 
 
